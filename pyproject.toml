@@ -1,0 +1,5 @@
+# Project settings read by tools. For now this only tells pytest to treat the
+# project root as importable, so tests can `import perception...` directly.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
