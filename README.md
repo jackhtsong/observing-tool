@@ -32,15 +32,18 @@ Goal: prove that minimap positions can predict fights before building anything l
 
 ### Running what exists so far
 
-Step 1 of phase 0, finding both teams' player dots on the minimap, is built.
+Built so far: finding both teams' player dots on the minimap, and reading kills from the kill feed.
 
 ```bash
 .venv/bin/python -m scripts.detect_dots --times 125 175 250   # check a few moments, saves pictures
 .venv/bin/python -m scripts.detect_dots --step 1              # whole clip, one frame per second
+.venv/bin/python -m scripts.detect_kills                      # every kill in the clip
 .venv/bin/python -m pytest                                     # run the tests
 ```
 
-Results land in `data/out/dots/`: `dots.csv` (one row per detected player icon) and `dots_<seconds>.png` pictures with red circles for PRX and cyan circles for LEV.
+Results land in `data/out/`:
+- `dots/dots.csv` has one row per detected player icon, and `dots/dots_<seconds>.png` shows red circles for PRX and cyan circles for LEV.
+- `kills/kills.csv` has one row per kill (time, which team killed which), and `kills/kill_<seconds>.png` is that kill-feed row, so you can read the names.
 
 **Done when** the heuristic predicts the players in upcoming kills (top-2 suggestions, 2 seconds ahead) clearly better than a naive "closest pair" baseline.
 

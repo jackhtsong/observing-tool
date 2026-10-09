@@ -75,13 +75,26 @@ class VideoSource:
         end of the video.
         """
         end = self.duration if end is None else min(end, self.duration)
-        t = start
-        while t < end:
-            frame = self.frame_at(t)
-            if frame is None:
+
+        # Jumping (seeking) in a compressed video is slow, so we jump once to
+        # `start` and then read forward. Frames we don't need are skipped
+        # with grab(), which is cheaper than read() because it doesn't hand
+        # the picture back to Python.
+        first = int(round(start * self.fps))
+        last = min(int(round(end * self.fps)), self.frame_count)
+        frames_per_step = max(int(round(step * self.fps)), 1)
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+
+        index = first
+        while index < last:
+            ok, frame = self._cap.read()
+            if not ok:
                 break
-            yield t, frame
-            t += step
+            yield index / self.fps, frame
+            # Skip ahead to the next frame we want.
+            for _ in range(frames_per_step - 1):
+                self._cap.grab()
+            index += frames_per_step
 
     def close(self) -> None:
         """Release the video file. Called automatically when used with `with`."""

@@ -49,10 +49,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-# Team labels used throughout the project.
-RED = "red"        # PRX in the Ascent test clip
-TEAL = "teal"      # LEV in the Ascent test clip
-UNKNOWN = "unknown"
+from perception.teams import RED, TEAL, UNKNOWN
 
 
 @dataclass
