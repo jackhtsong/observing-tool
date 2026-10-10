@@ -39,3 +39,7 @@ MINIMAP = Region(x=60, y=50, width=400, height=410)
 
 # The kill feed in the top-right corner, where "killer [gun] victim" rows appear.
 KILL_FEED = Region(x=1300, y=95, width=605, height=165)
+
+# The middle of the top bar: shows the round timer, or a red spike icon
+# once the spike is planted.
+ROUND_TIMER = Region(x=925, y=25, width=70, height=70)

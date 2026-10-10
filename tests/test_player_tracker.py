@@ -87,3 +87,15 @@ def test_reported_death_removes_the_vanished_track():
     assert len(tracker.deaths) == 1
     death = tracker.deaths[0]
     assert death.team == RED and abs(death.x - 300) < 1 and abs(death.y - 300) < 1
+
+
+def test_facing_is_smoothed_and_kept_as_a_direction():
+    """Readings flip from right to down; the track turns gradually and stays length 1."""
+    tracker = PlayerTracker()
+    right = Dot(x=100, y=100, radius=7, team=RED, red_share=0.3, teal_share=0, change=30, facing_x=1.0, facing_y=0.0)
+    down = Dot(x=100, y=100, radius=7, team=RED, red_share=0.3, teal_share=0, change=30, facing_x=0.0, facing_y=1.0)
+    for i in range(5):
+        tracker.update(i * STEP, [right])
+    track = tracker.update(0.5, [down])[0]
+    assert 0 < track.facing_y < 1 and track.facing_x > 0       # part way round, not a jump
+    assert abs(track.facing_x ** 2 + track.facing_y ** 2 - 1) < 1e-6

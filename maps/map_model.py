@@ -60,10 +60,18 @@ def extract_walls_and_floor(background: np.ndarray, floor: np.ndarray) -> tuple[
     grey = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
     tophat = cv2.morphologyEx(grey, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
     near_floor = cv2.dilate(floor, np.ones((5, 5), np.uint8)) > 0
-    lines = (tophat > 15) & near_floor
+    # Wall lines are white-ish. Brightly coloured lines are ability marks
+    # that stayed in one place long enough to end up in the empty-map
+    # picture (e.g. a Viper wall), not walls.
+    # The floor mask also left them out (they aren't grey), so thin coloured
+    # strokes lying inside the map are put back as floor.
+    coloured = cv2.cvtColor(background, cv2.COLOR_BGR2HSV)[..., 1] >= 70
+    lines = (tophat > 15) & near_floor & ~coloured
+    inside_map = cv2.morphologyEx(floor, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)) > 0
+    floor_ok = (floor > 0) | (coloured & inside_map)
 
-    walls = (lines | (floor == 0)).astype(np.uint8) * 255
-    walkable = ((floor > 0) & ~lines).astype(np.uint8) * 255
+    walls = (lines | ~floor_ok).astype(np.uint8) * 255
+    walkable = (floor_ok & ~lines).astype(np.uint8) * 255
     return walkable, walls
 
 
@@ -226,3 +234,33 @@ class MapModel:
             table[i + 1:, i] = clear
         np.fill_diagonal(table, True)
         return table
+
+
+# Maps the project knows about. A video's map is read from the start of its
+# file name, e.g. data/vods/breeze_prx_lev.mp4 -> "breeze". Videos whose name
+# starts with none of these are treated as Ascent (the first test clips are
+# called ascent_test*.mp4).
+KNOWN_MAPS = ("ascent", "bind", "breeze", "fracture", "haven", "icebox", "lotus",
+              "pearl", "split", "sunset", "abyss", "corrode")
+DEFAULT_MAP = "ascent"
+
+
+def map_name_for(video_path: str | Path) -> str:
+    """Which map a video shows, from its file name (see KNOWN_MAPS)."""
+    stem = Path(video_path).stem.lower()
+    return next((name for name in KNOWN_MAPS if stem.startswith(name)), DEFAULT_MAP)
+
+
+def load_map_for(video_path: str | Path) -> MapModel:
+    """The map model for a video's map, from maps/<map>/.
+
+    Raises a clear error naming the command to run if that map's pictures
+    haven't been made yet.
+    """
+    name = map_name_for(video_path)
+    folder = Path("maps") / name
+    if not (folder / "walls.png").exists():
+        raise SystemExit(
+            f"No map model for {name} yet. Track a {name} video first, then run:\n"
+            f"    .venv/bin/python -m scripts.build_map_model --map {name}")
+    return MapModel.load(folder)

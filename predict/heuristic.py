@@ -78,8 +78,8 @@ class HeuristicPredictor:
         self.geometry = geometry
         self.settings = settings or HeuristicSettings()
 
-    def rank_pairs(self, tracks: list[Track]) -> list[PairScore]:
-        """Score every red/teal pair and return them best first."""
+    def rank_pairs(self, tracks: list[Track], spike: tuple[float, float] | None = None) -> list[PairScore]:
+        """Score every red/teal pair and return them best first. (`spike` is ignored here.)"""
         pairs = [self.score_pair(r, t) for r, t in _enemy_pairs(tracks)]
         return sorted(pairs, key=lambda p: p.score, reverse=True)
 
@@ -109,8 +109,12 @@ class HeuristicPredictor:
 class ClosestPairBaseline:
     """The naive baseline: the closer two enemies are in a straight line, the likelier the fight."""
 
-    def rank_pairs(self, tracks: list[Track]) -> list[PairScore]:
-        """Score every red/teal pair by minus their straight-line distance, best first."""
+    def rank_pairs(self, tracks: list[Track], spike: tuple[float, float] | None = None) -> list[PairScore]:
+        """Score every red/teal pair by minus their straight-line distance, best first.
+
+        `spike` (the planted spike's spot) is accepted so every predictor can
+        be called the same way, but ignored here.
+        """
         pairs = []
         for red, teal in _enemy_pairs(tracks):
             distance = float(np.hypot(red.x - teal.x, red.y - teal.y))

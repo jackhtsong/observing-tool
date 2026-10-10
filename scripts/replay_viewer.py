@@ -5,9 +5,11 @@ This is the phase 0 demo, and the quickest way to see *why* a prediction
 missed. For every moment of the video it shows:
 
   left    the minimap, enlarged, with
-            - every tracked player (red / teal circles with their track number)
+            - every tracked player (red / teal circles with their track number,
+              and a short white line for the way they are looking)
             - the predictor's #1 pair (thick yellow line) and #2 pair (thin line)
             - each kill as a big X on the victim's last spot, for 2 s
+            - the planted spike as a yellow diamond
   right   a side panel with
             - the broadcast picture (what the observer is showing)
             - the top pairs and their scores
@@ -23,7 +25,8 @@ Controls (interactive window)
     d / a          forward / back 5 seconds
     . / ,          one step forward / back (0.1 s), handy while paused
     n / p          jump to 3 s before the next / previous kill
-    1 / 2          predictor: 1 = heuristic, 2 = closest pair
+    1 / 2 / 3 / 4  predictor: 1 = heuristic, 2 = closest pair, 3 = held angles,
+                   4 = spike (closest pair, pulled towards the planted spike)
     q / esc        quit
 
 Run it from the project root:
@@ -45,11 +48,13 @@ import cv2
 import numpy as np
 
 from capture.video_source import VideoSource
-from maps.map_model import MapModel
+from maps.map_model import load_map_for
 from perception.regions import MINIMAP
 from perception.teams import RED, TEAM_NAMES
+from predict.angles import AngleHoldPredictor
+from predict.context import SpikeContextPredictor
 from predict.heuristic import ClosestPairBaseline, HeuristicPredictor, PairScore
-from record.track_log import TrackLog, load_deaths, load_tracks
+from record.track_log import RoundLog, TrackLog, load_deaths, load_round_state, load_tracks
 from tracking.player_tracker import Death, Track
 
 STEP = 0.1                 # seconds between shown frames (the tracks were made at 10 per second)
@@ -71,12 +76,15 @@ PANEL_BG = (32, 32, 32)
 class ReplayRenderer:
     """Draws one replay screen for a given time. Holds no window, so it can be tested."""
 
-    def __init__(self, log: TrackLog, deaths: list[Death], predictors: dict[str, object]):
+    def __init__(self, log: TrackLog, deaths: list[Death], predictors: dict[str, object],
+                 round_log: RoundLog | None = None):
         """
         log:         the tracked frames (record.track_log.load_tracks)
         deaths:      kills tied to tracks (record.track_log.load_deaths)
-        predictors:  name -> object with rank_pairs(tracks), e.g. HeuristicPredictor
+        predictors:  name -> object with rank_pairs(tracks, spike=...), e.g. HeuristicPredictor
+        round_log:   spike state per frame (record.track_log.load_round_state), optional
         """
+        self.round_log = round_log or RoundLog(times=[], planted={}, spot={})
         self.log = log
         self.deaths = deaths
         self.death_times = [d.time for d in deaths]
@@ -85,9 +93,9 @@ class ReplayRenderer:
 
     # ----- facts for one moment -----
 
-    def ranked_pairs(self, tracks: list[Track]) -> list[PairScore]:
+    def ranked_pairs(self, tracks: list[Track], time: float) -> list[PairScore]:
         """The current predictor's pairs for these tracks, best first."""
-        return self.predictors[self.predictor_name].rank_pairs(tracks)
+        return self.predictors[self.predictor_name].rank_pairs(tracks, spike=self.round_log.spike_at(time))
 
     def next_death(self, time: float) -> Death | None:
         """The first kill strictly after `time`, if any."""
@@ -105,7 +113,7 @@ class ReplayRenderer:
     def render(self, time: float, frame: np.ndarray) -> np.ndarray:
         """The full screen for `time`: enlarged minimap on the left, panel on the right."""
         tracks = self.log.tracks_at(time)
-        ranked = self.ranked_pairs(tracks) if tracks else []
+        ranked = self.ranked_pairs(tracks, time) if tracks else []
         minimap = self._draw_minimap(MINIMAP.crop(frame), tracks, ranked[:2], time)
         panel = self._draw_panel(frame, tracks, ranked, time, height=minimap.shape[0])
         return np.hstack([minimap, panel])
@@ -129,10 +137,22 @@ class ReplayRenderer:
             cv2.line(out, at(pair.red.x, pair.red.y), at(pair.teal.x, pair.teal.y),
                      PAIR_COLOUR, thickness, cv2.LINE_AA)
 
+        spike = self.round_log.spike_at(time)
+        if spike is not None:
+            # Planted spike: a yellow diamond with a label.
+            cx, cy = at(*spike)
+            diamond = np.array([(cx, cy - 12), (cx + 12, cy), (cx, cy + 12), (cx - 12, cy)])
+            cv2.polylines(out, [diamond], True, (0, 220, 255), 3, cv2.LINE_AA)
+            cv2.putText(out, "SPIKE", (cx + 14, cy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 2, cv2.LINE_AA)
+
         for t in tracks:
             colour = TEAM_COLOURS[t.team]
             centre = at(t.x, t.y)
             cv2.circle(out, centre, 9 * SCALE // 2, colour, 2, cv2.LINE_AA)
+            if t.facing_x or t.facing_y:
+                # Short white line: which way the player is looking.
+                tip = (int(centre[0] + t.facing_x * 22), int(centre[1] + t.facing_y * 22))
+                cv2.line(out, centre, tip, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.putText(out, t.id.split("-")[-1], (centre[0] + 11, centre[1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1, cv2.LINE_AA)
 
@@ -168,7 +188,7 @@ class ReplayRenderer:
 
         minutes, seconds = divmod(time, 60)
         write(f"{int(minutes)}:{seconds:04.1f}", size=0.8, bold=2, gap=30)
-        write(f"predictor: {self.predictor_name}   (1 / 2 to switch)", DIM, 0.45)
+        write(f"predictor: {self.predictor_name}   (1-4 to switch)", DIM, 0.45)
         y += 6
 
         # Next kill and whether the victim is in the top 2 right now.
@@ -215,9 +235,13 @@ def build_renderer(video_path: str) -> ReplayRenderer:
         raise SystemExit(f"No tracks for {video_path}. Run: .venv/bin/python -m scripts.track_players --video {video_path}")
     log = load_tracks(str(folder / "tracks.csv"))
     deaths = load_deaths(str(folder / "deaths.csv"))
-    predictors = {"heuristic": HeuristicPredictor(MapModel.load("maps/ascent")),
-                  "closest pair": ClosestPairBaseline()}
-    return ReplayRenderer(log, deaths, predictors)
+    round_log = load_round_state(str(folder / "round_state.csv"))
+    model = load_map_for(video_path)
+    predictors = {"heuristic": HeuristicPredictor(model),
+                  "closest pair": ClosestPairBaseline(),
+                  "angles": AngleHoldPredictor(model),
+                  "spike": SpikeContextPredictor()}
+    return ReplayRenderer(log, deaths, predictors, round_log)
 
 
 def save_clip(video: VideoSource, renderer: ReplayRenderer, start: float, end: float) -> Path:
@@ -270,7 +294,7 @@ def play(video: VideoSource, renderer: ReplayRenderer, start: float, end: float)
         elif key in (ord("n"), ord("p")):
             t = jump_to_kill(renderer, t, forward=key == ord("n"), start=start, end=end)
             paused = True   # stop there, so the moment before the kill can be studied
-        elif key in (ord("1"), ord("2")):
+        elif key in (ord("1"), ord("2"), ord("3"), ord("4")):
             index = key - ord("1")
             if index < len(names):
                 renderer.predictor_name = names[index]
@@ -303,7 +327,9 @@ def main() -> None:
     p.add_argument("--video", default=None, help="VOD to replay (default: the first tracked one)")
     p.add_argument("--start", type=float, default=0.0)
     p.add_argument("--end", type=float, default=None)
-    p.add_argument("--predictor", choices=["heuristic", "closest pair"], default="heuristic")
+    # Held angles is the default: it scored best across Ascent, Lotus and
+    # Breeze (see the README). Press 1-4 in the window to compare.
+    p.add_argument("--predictor", choices=["heuristic", "closest pair", "angles", "spike"], default="angles")
     p.add_argument("--save", action="store_true", help="write an mp4 instead of opening a window")
     args = p.parse_args()
 

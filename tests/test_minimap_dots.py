@@ -100,3 +100,25 @@ def test_rotated_minimap_is_not_standard_layout():
 
     assert detector.is_standard_layout(background)
     assert not detector.is_standard_layout(rotated)
+
+
+def test_facing_points_at_the_pointer():
+    """An icon with its pointer on the right faces right; on top, faces up."""
+    background = make_empty_map()
+    frame = background.copy()
+    draw_icon(frame, 100, 200, RED_RING)
+    cv2.fillPoly(frame, [np.array([(107, 195), (107, 205), (114, 200)])], RED_RING)   # pointer, right
+    draw_icon(frame, 300, 310, TEAL_RING)
+    cv2.fillPoly(frame, [np.array([(295, 303), (305, 303), (300, 296)])], TEAL_RING)  # pointer, up
+
+    by_team = {d.team: d for d in make_detector(background).detect(frame)}
+    assert by_team[RED].facing_x > 0.8          # right
+    assert by_team[TEAL].facing_y < -0.8        # up (y grows downwards)
+
+
+def test_icon_without_pointer_has_unknown_facing():
+    background = make_empty_map()
+    frame = background.copy()
+    draw_icon(frame, 100, 200, RED_RING)
+    dot = make_detector(background).detect(frame)[0]
+    assert (dot.facing_x, dot.facing_y) == (0.0, 0.0)

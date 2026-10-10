@@ -49,16 +49,17 @@ import matplotlib
 matplotlib.use("Agg")  # draw charts to files, no window needed
 import matplotlib.pyplot as plt
 
-from maps.map_model import MapModel
+from maps.map_model import MapModel, load_map_for
 from perception.map_background import floor_mask
+from predict.angles import AngleHoldPredictor
+from predict.context import SpikeContextPredictor
 from predict.heuristic import ClosestPairBaseline, HeuristicPredictor, PairScore
-from record.track_log import TrackLog, load_deaths, load_tracks
+from record.track_log import TrackLog, load_deaths, load_round_state, load_tracks
 from tracking.player_tracker import Death, Track
 
 LEADS = [1.0, 2.0, 3.0, 5.0]     # seconds before the kill
 TOP_K = [1, 2]
 TRACKS_DIR = Path("data/out/tracks")   # one subfolder per tracked video
-MAP_FOLDER = Path("maps/ascent")       # the hand-editable map model (scripts/build_map_model.py)
 OUT_DIR = Path("data/out/eval")
 
 
@@ -105,6 +106,14 @@ def is_pair(p: PairScore, a: str, b: str) -> bool:
     return {p.red.id, p.teal.id} == {a, b}
 
 
+def make_methods(geometry: MapModel) -> dict[str, object]:
+    """Every predictor to compare, by the name used in the table and chart."""
+    return {"closest pair": ClosestPairBaseline(),
+            "heuristic": HeuristicPredictor(geometry),
+            "angles": AngleHoldPredictor(geometry),
+            "spike": SpikeContextPredictor()}
+
+
 def evaluate_video(folder: Path, hits: dict, evaluable: dict, rows: list) -> int:
     """Score both predictors on every kill of one tracked video.
 
@@ -113,8 +122,10 @@ def evaluate_video(folder: Path, hits: dict, evaluable: dict, rows: list) -> int
     """
     log = load_tracks(str(folder / "tracks.csv"))
     deaths = load_deaths(str(folder / "deaths.csv"))
-    geometry = MapModel.load(MAP_FOLDER)
-    methods = {"heuristic": HeuristicPredictor(geometry), "closest pair": ClosestPairBaseline()}
+    round_log = load_round_state(str(folder / "round_state.csv"))
+    # The folder is named after the video, so its name also tells the map.
+    geometry = load_map_for(folder.name)
+    methods = make_methods(geometry)
 
     killers = {d.time: guess_killer(log, d, geometry) for d in deaths}
 
@@ -129,8 +140,9 @@ def evaluate_video(folder: Path, hits: dict, evaluable: dict, rows: list) -> int
                 key = ("random", "victim", lead, k)
                 hits[key] = hits.get(key, 0) + random_hit_chance(tracks, death.track_id, k)
 
+            spike = round_log.spike_at(death.time - lead)   # None unless planted
             for name, method in methods.items():
-                ranked = method.rank_pairs(tracks)
+                ranked = method.rank_pairs(tracks, spike=spike)
                 for k in TOP_K:
                     top = ranked[:k]
                     victim_hit = any(p.involves(death.track_id) for p in top)
@@ -176,19 +188,22 @@ def main() -> None:
 
     # ----- print the results table -----
     print(f"{n} kills. Hit rate = kills hit / all {n} kills.\n")
-    print(f"{'lead':>5}  {'evaluable':>9}  {'measure':>7}  {'k':>2}  {'heuristic':>9}  {'closest':>8}  {'random':>7}")
+    names = [name for name, _, _, _ in hits if name != "random"]
+    names = list(dict.fromkeys(names))   # unique, in first-seen order
+    print(f"{'lead':>5}  {'evaluable':>9}  {'measure':>7}  {'k':>2}  " +
+          "  ".join(f"{name:>12}" for name in names + ["random"]))
     for lead in LEADS:
         for measure in ("victim", "pair"):
             for k in TOP_K:
-                h = hits.get(("heuristic", measure, lead, k), 0) / n
-                c = hits.get(("closest pair", measure, lead, k), 0) / n
-                r = hits.get(("random", "victim", lead, k), 0) / n if measure == "victim" else float("nan")
-                r_text = f"{r:7.0%}" if measure == "victim" else "      -"
-                print(f"{lead:4.0f}s  {evaluable[lead]:>9}  {measure:>7}  {k:>2}  {h:9.0%}  {c:8.0%}  {r_text}")
+                cells = [f"{hits.get((name, measure, lead, k), 0) / n:12.0%}" for name in names]
+                # Random picks are only worked out for the victim measure.
+                random_cell = f"{hits.get(('random', 'victim', lead, k), 0) / n:12.0%}" if measure == "victim" else f"{'-':>12}"
+                print(f"{lead:4.0f}s  {evaluable[lead]:>9}  {measure:>7}  {k:>2}  " + "  ".join(cells + [random_cell]))
 
     # ----- chart: victim in top 2, by lead time -----
     fig, ax = plt.subplots(figsize=(6, 3.6))
-    for name, label in (("heuristic", "Heuristic"), ("closest pair", "Closest pair"), ("random", "Random")):
+    for name in names + ["random"]:
+        label = name.capitalize()
         ys = [hits.get((name, "victim", lead, 2), 0) / n for lead in LEADS]
         ax.plot(LEADS, ys, marker="o", label=label)
     ax.set_xlabel("Seconds before the kill")

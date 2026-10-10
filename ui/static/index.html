@@ -1,0 +1,97 @@
+<!doctype html>
+<!--
+  index.html: the observer page.
+
+  Shows the one pair the observer should watch, a runner-up pair, the
+  minimap with that pair highlighted, and a status line. It asks the local
+  server (ui/server.py) for /state and /minimap.jpg five times a second.
+  Works in any browser window, and as an OBS "browser source".
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observer assist</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1f232b; --text: #f1f3f5; --dim: #8b93a1;
+    --red: #ff5a5f; --teal: #3fe0c5; --pair: #ffd23f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 16px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border-radius: 12px; padding: 20px; }
+  .label { color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; }
+  #watch { font-size: 44px; font-weight: 700; margin: 8px 0 4px; line-height: 1.15; }
+  #held { color: var(--dim); font-size: 16px; }
+  #also { font-size: 22px; margin-top: 6px; }
+  .red { color: var(--red); } .teal { color: var(--teal); } .vs { color: var(--dim); font-weight: 400; }
+  .flash { animation: flash 0.8s ease-out; }
+  @keyframes flash { from { background: rgba(255, 210, 63, 0.35); } to { background: transparent; } }
+  #status { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .chip { background: #2b3039; border-radius: 999px; padding: 4px 12px; font-size: 14px; }
+  .chip.on { background: var(--pair); color: #111; font-weight: 600; }
+  img { width: 100%; height: auto; border-radius: 8px; display: block; background: #000; }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <div class="label">Watch</div>
+    <div id="watch">waiting for the round…</div>
+    <div id="held"></div>
+    <div class="label" style="margin-top: 22px">Also watch</div>
+    <div id="also">–</div>
+    <div id="status"></div>
+  </section>
+  <section>
+    <img id="minimap" alt="Minimap with the suggested pair highlighted">
+  </section>
+</main>
+<script>
+  // Turn a pair from /state into "PRX 3 vs LEV 7" with team colours.
+  function pairHtml(p) {
+    if (!p) return "–";
+    return `<span class="red">${p.red_name} ${p.red}</span> <span class="vs">vs</span> ` +
+           `<span class="teal">${p.teal_name} ${p.teal}</span>`;
+  }
+
+  let lastKey = null;
+
+  async function refresh() {
+    try {
+      const s = await (await fetch("/state?t=" + Date.now())).json();
+      const watch = document.getElementById("watch");
+      if (!s.live) {
+        watch.textContent = "replay / round break";
+      } else {
+        watch.innerHTML = pairHtml(s.watch);
+        const key = s.watch ? s.watch.red + s.watch.teal : null;
+        if (key !== lastKey) {                       // the suggestion changed: flash it
+          watch.classList.remove("flash"); void watch.offsetWidth; watch.classList.add("flash");
+          lastKey = key;
+        }
+      }
+      document.getElementById("held").textContent =
+        s.live && s.watch ? `for ${s.held_for.toFixed(1)} s` : "";
+      document.getElementById("also").innerHTML = s.live ? pairHtml(s.also) : "–";
+      document.getElementById("status").innerHTML = [
+        `<span class="chip">${s.clock}</span>`,
+        `<span class="chip ${s.live ? "on" : ""}">${s.live ? "LIVE" : "not live"}</span>`,
+        s.planted ? `<span class="chip on">SPIKE PLANTED</span>` : "",
+        `<span class="chip">alive ${s.alive_red} v ${s.alive_teal}</span>`,
+        `<span class="chip">${s.latency_ms.toFixed(0)} ms</span>`,
+        `<span class="chip">predictor: ${s.predictor}</span>`,
+      ].join("");
+      document.getElementById("minimap").src = "/minimap.jpg?t=" + Date.now();
+    } catch (e) {
+      document.getElementById("watch").textContent = "tool not running";
+    }
+  }
+  setInterval(refresh, 200);
+  refresh();
+</script>
+</body>
+</html>

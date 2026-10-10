@@ -60,6 +60,8 @@ class Track:
     last_seen: float = 0.0  # time a dot was last paired with it
     hits: int = 1           # how many frames a dot was paired with it
     confirmed: bool = False # True once seen often enough to trust
+    facing_x: float = 0.0   # smoothed direction the player looks (x, y);
+    facing_y: float = 0.0   #   (0, 0) = not known yet
 
     @property
     def speed(self) -> float:
@@ -95,6 +97,11 @@ class TrackerSettings:
     # Smaller numbers = smoother but slower to react.
     alpha: float = 0.6
     beta: float = 0.15
+
+    # Facing is smoothed the same way: each new reading moves the track's
+    # facing this far towards it. Facing readings are noisy (the pointer is
+    # only a few pixels), so this is fairly low.
+    facing_alpha: float = 0.4
 
     # While unseen, a track's speed shrinks by this factor every second,
     # so a hidden player doesn't glide off through walls.
@@ -262,6 +269,18 @@ class PlayerTracker:
         if speed > s.max_speed:
             track.vx *= s.max_speed / speed
             track.vy *= s.max_speed / speed
+
+        # Facing: blend in the dot's reading, if it had one, then rescale to
+        # length 1 so it stays a pure direction.
+        if dot.facing_x or dot.facing_y:
+            if track.facing_x or track.facing_y:
+                fx = track.facing_x + s.facing_alpha * (dot.facing_x - track.facing_x)
+                fy = track.facing_y + s.facing_alpha * (dot.facing_y - track.facing_y)
+            else:
+                fx, fy = dot.facing_x, dot.facing_y   # first reading: take it as is
+            length = float(np.hypot(fx, fy))
+            if length > 1e-6:
+                track.facing_x, track.facing_y = fx / length, fy / length
 
         track.last_seen = time
         track.hits += 1

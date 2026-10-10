@@ -103,3 +103,33 @@ def test_thin_inner_wall_blocks_sight_but_not_walking():
     left, right = (30, 30), (90, 30)
     assert not model.line_of_sight(left, right)    # the wall is in the way
     assert model.walking_distance(left, right) < 100
+
+
+def test_holder_is_paired_with_the_enemy_about_to_enter_their_angle():
+    """Red holds the door from the left room, facing right/down towards it.
+    Teal-near is just behind the wall by the door; teal-far is closer in a
+    straight line but on the far side of the right room, away from the door.
+    The angle rule pairs red with teal-near."""
+    from predict.angles import AngleHoldPredictor, AngleSettings
+    g = two_rooms_model()
+    holder = track("red-1", RED, 60, 175)
+    holder.facing_x, holder.facing_y = 1.0, 0.0          # looking right, at the door (y 170-190)
+    near_door = track("teal-near", TEAL, 135, 150)       # right room, next to the door
+    far = track("teal-far", TEAL, 130, 40)               # right room, far top corner
+    predictor = AngleHoldPredictor(g, AngleSettings(w_close=0.0, w_angle=1.0))
+    best = predictor.rank_pairs([holder, near_door, far])[0]
+    assert {best.red.id, best.teal.id} == {"red-1", "teal-near"}
+
+
+def test_unknown_facing_gives_no_held_angle():
+    from predict.angles import AngleHoldPredictor
+    g = two_rooms_model()
+    assert AngleHoldPredictor(g).held_angle(track("red-1", RED, 60, 175)) is None
+
+
+def test_map_name_comes_from_the_video_file_name():
+    from maps.map_model import map_name_for
+    assert map_name_for("data/vods/breeze_prx_lev.mp4") == "breeze"
+    assert map_name_for("data/out/tracks/lotus_map3") == "lotus"
+    assert map_name_for("data/vods/ascent_test_extended.mp4") == "ascent"
+    assert map_name_for("data/vods/some_clip.mp4") == "ascent"     # unknown -> Ascent

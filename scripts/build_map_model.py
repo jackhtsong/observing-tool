@@ -16,7 +16,8 @@ data/out/map_model/preview.png, with three panels:
 
 Run it from the project root:
 
-    .venv/bin/python -m scripts.build_map_model                       # Ascent, from the first tracked video
+    .venv/bin/python -m scripts.build_map_model                       # Ascent, from the first tracked Ascent video
+    .venv/bin/python -m scripts.build_map_model --map breeze          # another map (video name must start with "breeze")
     .venv/bin/python -m scripts.build_map_model --force               # regenerate the pictures (loses hand edits!)
 """
 
@@ -29,10 +30,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from maps.map_model import MapModel, extract_walls_and_floor
+from maps.map_model import MapModel, extract_walls_and_floor, map_name_for
 from perception.map_background import floor_mask
 
 # Sample spots for the visibility preview: (label, x, y) in minimap pixels.
+# These are Ascent's sites; on other maps they are just three sample spots.
 PREVIEW_SPOTS = [("A site", 330, 125), ("B site", 60, 110), ("mid", 190, 200)]
 PREVIEW_COLOURS = [(0, 200, 255), (255, 120, 0), (120, 255, 120)]   # BGR
 
@@ -46,7 +48,7 @@ def main() -> None:
     args = p.parse_args()
 
     folder = Path("maps") / args.map
-    background_path = args.background or str(sorted(Path("data/out/tracks").glob("*/background.png"))[0])
+    background_path = args.background or default_background(args.map)
     background = cv2.imread(background_path)
 
     if (folder / "walls.png").exists() and not args.force:
@@ -66,6 +68,15 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out / "preview.png"), preview(background, model))
     print(f"Preview: {out}/preview.png")
+
+
+def default_background(map_name: str) -> str:
+    """The empty-minimap picture of the first tracked video of this map."""
+    for path in sorted(Path("data/out/tracks").glob("*/background.png")):
+        if map_name_for(path.parent.name) == map_name:
+            return str(path)
+    raise SystemExit(f"No tracked {map_name} video yet; run scripts.process_vods first "
+                     f"(the video's file name must start with '{map_name}').")
 
 
 def preview(background: np.ndarray, model: MapModel, scale: int = 2) -> np.ndarray:

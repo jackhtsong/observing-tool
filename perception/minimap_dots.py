@@ -63,6 +63,8 @@ class Dot:
     red_share: float   # fraction of ring pixels that are team red (0..1)
     teal_share: float  # fraction of ring pixels that are team teal (0..1)
     change: float      # how different the icon area is from the empty map (0..255)
+    facing_x: float = 0.0   # which way the player looks, as a direction (x, y);
+    facing_y: float = 0.0   #   (0, 0) when the pointer couldn't be found
 
 
 @dataclass
@@ -111,6 +113,13 @@ class DotDetectorSettings:
     # that tint must not count as "something is there".
     min_change_team: float = 3.0      # for circles with a team-coloured ring
     min_change_unknown: float = 30.0  # for circles without one
+
+    # Facing (see _facing): the band outside the ring where the pointer is,
+    # in px beyond the radius, and how clear the pointer must be.
+    pointer_inner: float = 1.5
+    pointer_outer: float = 6.0
+    pointer_min_pixels: int = 4
+    pointer_min_strength: float = 0.35   # 1.0 = every band pixel on one side
 
     # Two same-team dots closer than this many radii are one icon (see
     # _remove_duplicates).
@@ -303,7 +312,42 @@ class DotDetector:
         elif change < min_change:
             return None
 
-        return Dot(x=x, y=y, radius=r, team=team, red_share=red_share, teal_share=teal_share, change=change)
+        facing_x, facing_y = self._facing(x, y, r, maps.red if team == RED else maps.teal) \
+            if team != UNKNOWN else (0.0, 0.0)
+        return Dot(x=x, y=y, radius=r, team=team, red_share=red_share, teal_share=teal_share,
+                   change=change, facing_x=facing_x, facing_y=facing_y)
+
+    def _facing(self, x: float, y: float, r: float, team_pixels: np.ndarray) -> tuple[float, float]:
+        """Which way the icon's pointer sticks out: a direction (x, y), or (0, 0).
+
+        The team-coloured ring goes all the way round the portrait, except
+        for the little pointer (a teardrop tip) on the side the player is
+        looking. So we take the team-coloured pixels in a band just outside
+        the ring, and add up the directions from the icon centre to each of
+        them. Pixels all round cancel out; the pointer's pixels don't, so the
+        total points at the pointer.
+
+        If the total is weak compared to the number of pixels (no clear
+        pointer, e.g. it is hidden under another icon), we return (0, 0) for
+        "unknown" rather than a guess. Note y grows downwards on screen.
+        """
+        s = self.settings
+        h, w = team_pixels.shape
+        reach = int(r + s.pointer_outer) + 1
+        x0, x1 = max(int(x) - reach, 0), min(int(x) + reach + 1, w)
+        y0, y1 = max(int(y) - reach, 0), min(int(y) + reach + 1, h)
+        ys, xs = np.nonzero(team_pixels[y0:y1, x0:x1])
+        dx, dy = xs + x0 - x, ys + y0 - y
+        distance = np.hypot(dx, dy)
+        band = (distance >= r + s.pointer_inner) & (distance <= r + s.pointer_outer)
+        if band.sum() < s.pointer_min_pixels:
+            return 0.0, 0.0
+        sum_x = float((dx[band] / distance[band]).sum())
+        sum_y = float((dy[band] / distance[band]).sum())
+        length = float(np.hypot(sum_x, sum_y))
+        if length / band.sum() < s.pointer_min_strength:
+            return 0.0, 0.0
+        return sum_x / length, sum_y / length
 
     # ----- helpers used by detect() -----
 

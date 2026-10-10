@@ -5,7 +5,8 @@ This combines the pieces built so far, frame by frame:
   1. skip replays and round-end screens (minimap layout check),
   2. find the player dots on the minimap,
   3. read the kill feed for new kills,
-  4. update the tracker with the dots, and tell it about each death.
+  4. update the tracker with the dots, and tell it about each death,
+  5. note whether the spike is planted, and where (perception/round_state.py).
 
 The tracker is reset whenever the minimap leaves its live layout for more
 than a second, which happens between every round, so each round starts
@@ -18,8 +19,10 @@ Run it from the project root:
     .venv/bin/python -m scripts.track_players --video data/vods/other_match.mp4
 
 Outputs go to data/out/tracks/<video name>/, e.g. data/out/tracks/ascent_test/:
-    tracks.csv    time, track, team, x, y, vx, vy, speed, seen   (one row per track per frame)
+    tracks.csv    time, track, team, x, y, vx, vy, speed, seen, fx, fy   (one row per track per frame;
+                  fx, fy = facing direction, 0, 0 if unknown)
     deaths.csv    time, track, team, x, y                        (one row per death matched to a track)
+    round_state.csv  time, planted, spike_x, spike_y              (spike planted yet, and where; per live frame)
     background.png  the empty minimap of this video (used by the evaluation)
     tracks.mp4    with --save-video: the minimap with tracks drawn on, to check by eye
 """
@@ -34,17 +37,11 @@ import cv2
 import numpy as np
 
 from capture.video_source import VideoSource
-from perception.kill_feed import KillFeedTracker
-from perception.map_background import floor_mask, load_or_build_background
-from perception.minimap_dots import DotDetector
-from perception.regions import KILL_FEED, MINIMAP
+from live.pipeline import LivePipeline
+from perception.map_background import load_or_build_background
+from perception.regions import MINIMAP
 from perception.teams import RED, TEAM_NAMES
-from tracking.player_tracker import PlayerTracker, Track
-
-# How long the minimap must be out of its live layout before we treat it as
-# a round change and reset the tracker. Short dips (a flash on screen) are
-# ignored.
-RESET_AFTER = 1.0
+from tracking.player_tracker import Track
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,50 +103,44 @@ def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float |
     with VideoSource(video_path) as video:
         background = load_or_build_background(video, MINIMAP)
         cv2.imwrite(str(out_dir / "background.png"), background)
-        detector = DotDetector(background, floor_mask(background))
-        kill_feed = KillFeedTracker()
-        tracker = PlayerTracker()
+        # All the per-frame work happens in the shared pipeline (live/pipeline.py).
+        pipeline = LivePipeline(background, predictor=None, assist=assist)
 
         writer_video = None
         trails: dict[str, list] = {}   # track id -> recent positions, for drawing
-        not_live_since = None          # when the minimap last left its live layout
 
-        with open(out_dir / "tracks.csv", "w", newline="") as f:
+        with open(out_dir / "tracks.csv", "w", newline="") as f, \
+                open(out_dir / "round_state.csv", "w", newline="") as round_file:
             rows = csv.writer(f)
-            rows.writerow(["time", "track", "team", "x", "y", "vx", "vy", "speed", "seen"])
+            round_rows = csv.writer(round_file)
+            round_rows.writerow(["time", "planted", "spike_x", "spike_y"])
+            rows.writerow(["time", "track", "team", "x", "y", "vx", "vy", "speed", "seen", "fx", "fy"])
 
             for t, frame in video.frames(start, end, step):
-                minimap = MINIMAP.crop(frame)
-                live = detector.is_standard_layout(minimap)
+                result = pipeline.step(t, frame)
 
-                # Kills: read every frame, but only record them while live.
-                for kill in kill_feed.update(t, KILL_FEED.crop(frame), record=live):
-                    tracker.report_death(kill.time, kill.victim_team)
+                for kill in result.new_kills:
                     print(f"{t:7.1f}s  kill: {TEAM_NAMES[kill.killer_team]} killed {TEAM_NAMES[kill.victim_team]}")
-
-                if not live:
-                    # Reset once the break has lasted long enough to be a round change.
-                    not_live_since = t if not_live_since is None else not_live_since
-                    if t - not_live_since >= RESET_AFTER and tracker.tracks:
-                        tracker.reset()
-                        trails.clear()
-                        print(f"{t:7.1f}s  minimap left live layout: tracker reset")
+                if result.round_reset:
+                    trails.clear()
+                    print(f"{t:7.1f}s  minimap left live layout: tracker reset")
+                if not result.live:
                     continue
-                not_live_since = None
 
-                dots = detector.detect(minimap)
-                if assist:
-                    dots += detector.find_expected(minimap, tracker.expected_missing(t, dots), dots)
-                tracks = tracker.update(t, dots)
-                for tr in tracks:
+                # Spike: planted yet, and where (blank until its spot is known).
+                spot = [f"{result.spike[0]:.1f}", f"{result.spike[1]:.1f}"] if result.spike else ["", ""]
+                round_rows.writerow([f"{t:.2f}", int(result.planted)] + spot)
+
+                for tr in result.tracks:
                     seen = int(t - tr.last_seen < 1e-6)
                     rows.writerow([f"{t:.2f}", tr.id, tr.team, f"{tr.x:.1f}", f"{tr.y:.1f}",
-                                   f"{tr.vx:.1f}", f"{tr.vy:.1f}", f"{tr.speed:.1f}", seen])
+                                   f"{tr.vx:.1f}", f"{tr.vy:.1f}", f"{tr.speed:.1f}", seen,
+                                   f"{tr.facing_x:.2f}", f"{tr.facing_y:.2f}"])
                     trails.setdefault(tr.id, []).append((tr.x, tr.y))
                     trails[tr.id] = trails[tr.id][-30:]   # keep the last 3 s at 10 fps
 
                 if save_video:
-                    picture = draw_tracks(minimap, tracks, trails, t)
+                    picture = draw_tracks(result.minimap, result.tracks, trails, t)
                     if writer_video is None:
                         h, w = picture.shape[:2]
                         fps = 1.0 / step
@@ -164,10 +155,10 @@ def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float |
     with open(out_dir / "deaths.csv", "w", newline="") as f:
         rows = csv.writer(f)
         rows.writerow(["time", "track", "team", "x", "y"])
-        for d in tracker.deaths:
+        for d in pipeline.tracker.deaths:
             rows.writerow([f"{d.time:.2f}", d.track_id, d.team, f"{d.x:.1f}", f"{d.y:.1f}"])
 
-    print(f"{len(tracker.deaths)} deaths matched to tracks. Wrote results to {out_dir}/")
+    print(f"{len(pipeline.tracker.deaths)} deaths matched to tracks. Wrote results to {out_dir}/")
 
 
 def main() -> None:
