@@ -49,6 +49,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from perception.icon_classifier import IconClassifier, crop_features
 from perception.teams import RED, TEAL, UNKNOWN
 
 
@@ -65,6 +66,7 @@ class Dot:
     change: float      # how different the icon area is from the empty map (0..255)
     facing_x: float = 0.0   # which way the player looks, as a direction (x, y);
     facing_y: float = 0.0   #   (0, 0) when the pointer couldn't be found
+    chance: float = 1.0     # the icon classifier's confidence it's a player (1.0 if rules were used)
 
 
 @dataclass
@@ -99,6 +101,9 @@ class DotDetectorSettings:
     min_saturation: int = 60      # ring pixels must be clearly coloured...
     min_value: int = 100          # ...and not too dark
     min_ring_share: float = 0.08  # at least 8% of ring pixels must be the team colour
+    min_ring_coverage: float = 0.2   # share of directions round the icon with team colour
+    ring_sectors: int = 12
+    max_inside_same_hue: float = 0.6  # inside share of the team's hue at any brightness (ability icons)
     max_inside_share: float = 0.5   # more team colour than this INSIDE means it is background, not a ring
                                     # (not lower: red agents' skin and hair are reddish too)
 
@@ -120,6 +125,9 @@ class DotDetectorSettings:
     pointer_outer: float = 6.0
     pointer_min_pixels: int = 4
     pointer_min_strength: float = 0.35   # 1.0 = every band pixel on one side
+
+    # Learned classifier (perception/icon_classifier.py): lowest chance accepted.
+    min_icon_chance: float = 0.5
 
     # Two same-team dots closer than this many radii are one icon (see
     # _remove_duplicates).
@@ -148,6 +156,8 @@ class _ColourMaps:
     teal: np.ndarray     # True where the pixel is team teal
     yellow: np.ndarray   # True where the pixel is spike yellow
     change: np.ndarray   # how different each pixel is from the empty map (0..255)
+    red_any: np.ndarray  # team-red hue at any brightness (dark pixels included)
+    teal_any: np.ndarray # team-teal hue at any brightness
 
 
 class DotDetector:
@@ -157,13 +167,19 @@ class DotDetector:
     because step 3 compares each frame against it.
     """
 
-    def __init__(self, background: np.ndarray, floor: np.ndarray, settings: DotDetectorSettings | None = None):
+    def __init__(self, background: np.ndarray, floor: np.ndarray, settings: DotDetectorSettings | None = None,
+                 classifier: IconClassifier | None | str = "default"):
         """Store the background and pre-compute the area where icons may appear.
 
         background: empty minimap, BGR, same size as the crops we will detect on.
         floor:      floor mask from map_background.floor_mask (255 = floor).
+        classifier: the learned "is this a player?" model (icon_classifier.py).
+                    "default" loads the trained one if it exists; None uses
+                    only the hand-written colour rules (steps 3-4).
         """
         self.settings = settings or DotDetectorSettings()
+        self.classifier = IconClassifier.load() if classifier == "default" else classifier
+        self._background_u8 = background
         self.background = background.astype(np.int16)  # signed, so subtraction can go negative
 
         self.floor = floor > 0
@@ -209,10 +225,17 @@ class DotDetector:
         yellow_pixels = (hsv[..., 0] >= 20) & (hsv[..., 0] <= 35) & (hsv[..., 1] >= 120) & (hsv[..., 2] >= 150)
         change_map = np.abs(minimap.astype(np.int16) - self.background).mean(axis=2)
 
-        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map)
+        red_any, teal_any = self._team_hue_any_brightness(hsv)
+        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map,
+                           red_any=red_any, teal_any=teal_any)
 
-        # Step 1: find circles; steps 2-4: check each one (see _check).
-        dots = [d for d in (self._check(x, y, r, maps) for x, y, r in self._find_circles(minimap)) if d]
+        # Step 1: find circles; steps 2-4: check each one, with the learned
+        # classifier if there is one (see _check_learned), else the rules (_check).
+        circles = self._find_circles(minimap)
+        if self.classifier is not None:
+            dots = self._check_learned(minimap, circles, maps)
+        else:
+            dots = [d for d in (self._check(x, y, r, maps) for x, y, r in circles) if d]
         # Step 5: clean up.
         dots = self._remove_duplicates(dots)
 
@@ -239,7 +262,9 @@ class DotDetector:
         red_pixels, teal_pixels = self._team_colour_masks(hsv)
         yellow_pixels = (hsv[..., 0] >= 20) & (hsv[..., 0] <= 35) & (hsv[..., 1] >= 120) & (hsv[..., 2] >= 150)
         change_map = np.abs(minimap.astype(np.int16) - self.background).mean(axis=2)
-        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map)
+        red_any, teal_any = self._team_hue_any_brightness(hsv)
+        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map,
+                           red_any=red_any, teal_any=teal_any)
 
         found = []
         r = (s.min_radius + s.max_radius) / 2
@@ -258,6 +283,42 @@ class DotDetector:
             if sum(e.team == d.team for e in existing + kept) < s.max_per_team:
                 kept.append(d)
         return kept
+
+    def _check_learned(self, minimap: np.ndarray, circles: list[tuple[float, float, float]],
+                       maps: _ColourMaps) -> list[Dot]:
+        """Steps 2-4 with the learned classifier instead of the colour rules.
+
+        Each circle on the floor is shown to the classifier; those it rates
+        at least `min_icon_chance` are players. The team is whichever team
+        colour fills more of the ring (looking a little wider if the ring is
+        pale); a circle with no team colour at all is dropped.
+        """
+        s = self.settings
+        shape = maps.change.shape
+        candidates = [(x, y, r) for x, y, r in circles
+                      if self._inside(x, y) and self.allowed_area[int(y), int(x)]]
+        if not candidates:
+            return []
+        table = np.array([crop_features(minimap, self._background_u8, x, y) for x, y, _ in candidates])
+        chances = self.classifier.predict(table)
+
+        dots = []
+        for (x, y, r), chance in zip(candidates, chances):
+            if chance < s.min_icon_chance:
+                continue
+            ring = self._disc_mask(shape, x, y, r + 3) & ~self._disc_mask(shape, x, y, r - 2)
+            red_share, teal_share = float(maps.red[ring].mean()), float(maps.teal[ring].mean())
+            if red_share == teal_share == 0.0:
+                wide = self._disc_mask(shape, x, y, r + 7) & ~self._disc_mask(shape, x, y, r)
+                red_share, teal_share = float(maps.red[wide].mean()), float(maps.teal[wide].mean())
+                if red_share == teal_share == 0.0:
+                    continue
+            team = RED if red_share > teal_share else TEAL
+            facing_x, facing_y = self._facing(x, y, r, maps.red if team == RED else maps.teal)
+            dots.append(Dot(x=x, y=y, radius=r, team=team, red_share=red_share, teal_share=teal_share,
+                            change=float(chance) * 100, facing_x=facing_x, facing_y=facing_y,
+                            chance=float(chance)))
+        return dots
 
     def _check(self, x: float, y: float, r: float, maps: _ColourMaps,
                min_ring_share: float | None = None, min_change: float | None = None) -> Dot | None:
@@ -281,6 +342,12 @@ class DotDetector:
         teal_share = float(maps.teal[ring].mean())
         team = self._pick_team(red_share, teal_share, min_ring_share)
 
+        # The ring must go round the icon, not just be crossed by a coloured line.
+        if team != UNKNOWN:
+            team_pixels = maps.red if team == RED else maps.teal
+            if self._ring_coverage(x, y, ring, team_pixels) < self.settings.min_ring_coverage:
+                team = UNKNOWN
+
         # A real icon has a portrait inside the ring, so its inside is not
         # mostly team colour. When the inside IS mostly team colour, the
         # "ring" is really a red or teal game scene showing through a gap
@@ -290,6 +357,15 @@ class DotDetector:
             team = UNKNOWN
         elif team == TEAL and maps.teal[inside].mean() > self.settings.max_inside_share:
             team = UNKNOWN
+
+        # Ability icons (e.g. a turret or trap) are a dark disc in the team's
+        # own colour with a small white symbol. A player icon's inside is a
+        # portrait, which is not mostly the team colour even counting dark
+        # pixels.
+        if team != UNKNOWN:
+            same_hue = (maps.red_any if team == RED else maps.teal_any)[inside].mean()
+            if same_hue > self.settings.max_inside_same_hue:
+                team = UNKNOWN
 
         # The spike icon is not a player.
         if maps.yellow[inside].mean() > self.settings.max_yellow_inside:
@@ -360,7 +436,8 @@ class DotDetector:
         """
         limit = self.settings.max_per_team
         kept = [d for d in dots if d.team == UNKNOWN]
-        for team, share in ((RED, lambda d: d.red_share), (TEAL, lambda d: d.teal_share)):
+        # Most confident first (the classifier's chance, then ring strength).
+        for team, share in ((RED, lambda d: (d.chance, d.red_share)), (TEAL, lambda d: (d.chance, d.teal_share))):
             team_dots = sorted((d for d in dots if d.team == team), key=share, reverse=True)
             kept.extend(team_dots[:limit])
         return kept
@@ -416,6 +493,29 @@ class DotDetector:
             if not is_duplicate:
                 kept.append(dot)
         return kept
+
+    def _team_hue_any_brightness(self, hsv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Like _team_colour_masks, but dark pixels count too (for ability icons)."""
+        s = self.settings
+        hue, sat = hsv[..., 0], hsv[..., 1]
+        coloured = sat >= s.min_saturation
+        red = coloured & ((hue >= s.red_hue_low) | (hue <= s.red_hue_high))
+        teal = coloured & (hue >= s.teal_hue_low) & (hue <= s.teal_hue_high)
+        return red, teal
+
+    def _ring_coverage(self, x: float, y: float, ring: np.ndarray, team_pixels: np.ndarray) -> float:
+        """Share of directions around the icon (out of `ring_sectors`) where the ring has team colour.
+
+        A real icon's ring goes most of the way round. A coloured line
+        (an ability wall, a beam) passing through a circle only colours it
+        in two places, so its coverage is low.
+        """
+        ys, xs = np.nonzero(ring & team_pixels)
+        if len(xs) == 0:
+            return 0.0
+        angles = np.arctan2(ys - y, xs - x)
+        sectors = ((angles + np.pi) / (2 * np.pi) * self.settings.ring_sectors).astype(int) % self.settings.ring_sectors
+        return len(np.unique(sectors)) / self.settings.ring_sectors
 
     def _team_colour_masks(self, hsv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return two True/False images: pixels that look team-red, and team-teal."""

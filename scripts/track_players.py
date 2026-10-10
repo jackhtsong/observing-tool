@@ -19,8 +19,8 @@ Run it from the project root:
     .venv/bin/python -m scripts.track_players --video data/vods/other_match.mp4
 
 Outputs go to data/out/tracks/<video name>/, e.g. data/out/tracks/ascent_test/:
-    tracks.csv    time, track, team, x, y, vx, vy, speed, seen, fx, fy   (one row per track per frame;
-                  fx, fy = facing direction, 0, 0 if unknown)
+    tracks.csv    time, track, team, x, y, vx, vy, speed, seen, fx, fy, slot   (one row per track per frame;
+                  fx, fy = facing direction, 0, 0 if unknown; slot = player number 1-5 shown on screen)
     deaths.csv    time, track, team, x, y                        (one row per death matched to a track)
     round_state.csv  time, planted, spike_x, spike_y              (spike planted yet, and where; per live frame)
     background.png  the empty minimap of this video (used by the evaluation)
@@ -79,7 +79,7 @@ def draw_tracks(minimap: np.ndarray, tracks: list[Track], trails: dict[str, list
         cv2.circle(out, centre, 9 * scale // 2, colour, 2 if seen else 1, cv2.LINE_AA)
         arrow_end = (int((t.x + t.vx) * scale), int((t.y + t.vy) * scale))
         cv2.arrowedLine(out, centre, arrow_end, colour, 1, cv2.LINE_AA, tipLength=0.3)
-        cv2.putText(out, t.id.split("-")[1], (centre[0] + 10, centre[1] - 8),
+        cv2.putText(out, str(t.slot), (centre[0] + 10, centre[1] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1, cv2.LINE_AA)
     cv2.putText(out, f"{now:6.1f}s", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     return out
@@ -114,7 +114,7 @@ def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float |
             rows = csv.writer(f)
             round_rows = csv.writer(round_file)
             round_rows.writerow(["time", "planted", "spike_x", "spike_y"])
-            rows.writerow(["time", "track", "team", "x", "y", "vx", "vy", "speed", "seen", "fx", "fy"])
+            rows.writerow(["time", "track", "team", "x", "y", "vx", "vy", "speed", "seen", "fx", "fy", "slot"])
 
             for t, frame in video.frames(start, end, step):
                 result = pipeline.step(t, frame)
@@ -135,7 +135,7 @@ def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float |
                     seen = int(t - tr.last_seen < 1e-6)
                     rows.writerow([f"{t:.2f}", tr.id, tr.team, f"{tr.x:.1f}", f"{tr.y:.1f}",
                                    f"{tr.vx:.1f}", f"{tr.vy:.1f}", f"{tr.speed:.1f}", seen,
-                                   f"{tr.facing_x:.2f}", f"{tr.facing_y:.2f}"])
+                                   f"{tr.facing_x:.2f}", f"{tr.facing_y:.2f}", tr.slot])
                     trails.setdefault(tr.id, []).append((tr.x, tr.y))
                     trails[tr.id] = trails[tr.id][-30:]   # keep the last 3 s at 10 fps
 

@@ -1,10 +1,11 @@
 """
 server.py: a small local web server for the observer page.
 
-It serves three things on http://localhost:<port>/ :
+It serves these on http://localhost:<port>/ :
     /              the observer page (ui/static/index.html)
     /state         the latest suggestion and status, as JSON
     /minimap.jpg   the latest minimap picture with the suggestion drawn on
+    /killfeed.jpg  the latest kill-feed picture, cut from the broadcast
 
 The live runner (scripts/run_live.py) calls ObserverServer.publish() every
 frame; the page asks for /state and /minimap.jpg several times a second.
@@ -29,7 +30,7 @@ class ObserverServer:
         self.port = port
         self._lock = threading.Lock()        # the page reads while the runner writes
         self._state: dict = {"status": "starting"}
-        self._jpeg: bytes = b""
+        self._images: dict[str, bytes] = {}   # "/minimap.jpg" -> JPEG bytes, ...
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
@@ -44,12 +45,18 @@ class ObserverServer:
     def stop(self) -> None:
         self._httpd.shutdown()
 
-    def publish(self, state: dict, jpeg: bytes | None = None) -> None:
-        """Replace the state (and optionally the minimap picture) the page shows."""
+    def publish(self, state: dict, jpeg: bytes | None = None, images: dict[str, bytes] | None = None) -> None:
+        """Replace the state and pictures the page shows.
+
+        jpeg:   the minimap picture (served at /minimap.jpg)
+        images: any other pictures, by name, e.g. {"killfeed.jpg": ...}
+        """
         with self._lock:
             self._state = state
             if jpeg is not None:
-                self._jpeg = jpeg
+                self._images["/minimap.jpg"] = jpeg
+            for name, data in (images or {}).items():
+                self._images["/" + name] = data
 
     def _handler(self):
         """Build the request handler class, bound to this server's state."""
@@ -64,9 +71,9 @@ class ObserverServer:
                     with server._lock:
                         body = json.dumps(server._state).encode()
                     self._send(200, "application/json", body)
-                elif path == "/minimap.jpg":
+                elif path.endswith(".jpg"):
                     with server._lock:
-                        body = server._jpeg
+                        body = server._images.get(path, b"")
                     self._send(200 if body else 404, "image/jpeg", body)
                 else:
                     self._send(404, "text/plain", b"not found")

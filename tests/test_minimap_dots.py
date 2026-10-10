@@ -49,7 +49,7 @@ def draw_death_x(img: np.ndarray, x: int, y: int, colour: tuple) -> None:
 
 def make_detector(background: np.ndarray) -> DotDetector:
     """Build a detector for the fake map, the same way the real script does."""
-    return DotDetector(background, floor_mask(background))
+    return DotDetector(background, floor_mask(background), classifier=None)   # rules only: these tests check the rules
 
 
 def test_empty_map_has_no_dots():

@@ -99,3 +99,24 @@ def test_facing_is_smoothed_and_kept_as_a_direction():
     track = tracker.update(0.5, [down])[0]
     assert 0 < track.facing_y < 1 and track.facing_x > 0       # part way round, not a jump
     assert abs(track.facing_x ** 2 + track.facing_y ** 2 - 1) < 1e-6
+
+
+def test_players_are_numbered_1_to_5_and_numbers_are_reused():
+    """Track ids keep growing as players are lost and found again, but the
+    shown number (slot) always stays within 1-5, and freed numbers come back."""
+    tracker = PlayerTracker()
+    seen_slots, seen_ids = set(), set()
+    t = 0.0
+    # 20 short "lives": each time, 5 players appear at new spots for 1 s, then vanish for 5 s.
+    for life in range(20):
+        spots = [dot(40 + 60 * k, 40 + 15 * life) for k in range(5)]
+        for _ in range(10):
+            for track in tracker.update(t, spots):
+                seen_slots.add(track.slot)
+                seen_ids.add(track.id)
+            t += STEP
+        for _ in range(50):
+            tracker.update(t, [])
+            t += STEP
+    assert len(seen_ids) > 5                 # many different track ids...
+    assert seen_slots == {1, 2, 3, 4, 5}     # ...but only ever numbers 1-5

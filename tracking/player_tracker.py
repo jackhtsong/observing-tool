@@ -62,6 +62,7 @@ class Track:
     confirmed: bool = False # True once seen often enough to trust
     facing_x: float = 0.0   # smoothed direction the player looks (x, y);
     facing_y: float = 0.0   #   (0, 0) = not known yet
+    slot: int = 0           # player number 1-5 within the team, for display; 0 until confirmed
 
     @property
     def speed(self) -> float:
@@ -286,6 +287,7 @@ class PlayerTracker:
         track.hits += 1
         if not track.confirmed and track.hits >= s.confirm_hits:
             track.confirmed = True
+            track.slot = self._free_slot(track.team)
 
     def _start_new_tracks(self, time: float, team: str, dots: list[Dot]) -> None:
         """Step 5: start a tentative track for each unexplained dot.
@@ -327,6 +329,20 @@ class PlayerTracker:
             elif time - death.time <= s.death_window:
                 still_pending.append(death)  # keep waiting for the dot to vanish
         self._pending_deaths = still_pending
+
+    def _free_slot(self, team: str) -> int:
+        """The lowest player number (1-5) not used by another confirmed track of this team.
+
+        Track ids keep counting up (red-1, red-2, ... red-43) because a
+        player whose dot is lost gets a new track. Those numbers are useless
+        to an observer, so each confirmed track also gets a slot 1-5, and a
+        slot is handed out again once its track ends. When a track breaks
+        and the same player is picked up again, they usually get their old
+        number back, since it is the one that just came free.
+        """
+        used = {t.slot for t in self.tracks if t.team == team and t.confirmed and t.slot}
+        return next((n for n in range(1, self.settings.players_per_team + 1) if n not in used),
+                    self.settings.players_per_team + 1)
 
     def _drop_old_tracks(self, time: float) -> None:
         """Delete tracks that are unseen too long, or never got confirmed."""

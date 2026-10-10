@@ -45,6 +45,9 @@
     <div class="label" style="margin-top: 22px">Also watch</div>
     <div id="also">–</div>
     <div id="status"></div>
+    <div class="label" style="margin-top: 22px">Kill feed</div>
+    <img id="killfeed" alt="Kill feed from the broadcast" style="margin-top: 8px; background: transparent">
+    <div id="kills" style="margin-top: 10px; font-size: 16px; line-height: 1.6"></div>
   </section>
   <section>
     <img id="minimap" alt="Minimap with the suggested pair highlighted">
@@ -54,8 +57,10 @@
   // Turn a pair from /state into "PRX 3 vs LEV 7" with team colours.
   function pairHtml(p) {
     if (!p) return "–";
+    const chance = p.chance === null || p.chance === undefined ? "" :
+      ` <span class="vs">${Math.round(p.chance * 100)}%</span>`;
     return `<span class="red">${p.red_name} ${p.red}</span> <span class="vs">vs</span> ` +
-           `<span class="teal">${p.teal_name} ${p.teal}</span>`;
+           `<span class="teal">${p.teal_name} ${p.teal}</span>${chance}`;
   }
 
   let lastKey = null;
@@ -66,6 +71,13 @@
       const watch = document.getElementById("watch");
       if (!s.live) {
         watch.textContent = "replay / round break";
+      } else if (!s.watch && s.threshold !== null && s.threshold !== undefined) {
+        // Probability mode and nothing over the threshold: still show the
+        // most likely pair (white line on the minimap), but dimmed, with a note.
+        const note = `<div class="vs" style="font-size: 16px; font-weight: 400">` +
+                     `most likely pair; under ${Math.round(s.threshold * 100)}%, no fight expected in the next 3 s</div>`;
+        watch.innerHTML = s.best ? `<span style="opacity: 0.55">${pairHtml(s.best)}</span>${note}` : note;
+        lastKey = null;
       } else {
         watch.innerHTML = pairHtml(s.watch);
         const key = s.watch ? s.watch.red + s.watch.teal : null;
@@ -86,6 +98,12 @@
         `<span class="chip">predictor: ${s.predictor}</span>`,
       ].join("");
       document.getElementById("minimap").src = "/minimap.jpg?t=" + Date.now();
+      document.getElementById("killfeed").src = "/killfeed.jpg?t=" + Date.now();
+      // Kills the tool has read so far, newest first.
+      document.getElementById("kills").innerHTML = (s.kills || []).map(k =>
+        `<span class="vs">${k.clock}</span> <span class="${k.killer_team}">${k.killer}</span> ` +
+        `<span class="vs">killed</span> <span class="${k.victim_team}">${k.victim}</span>`
+      ).join("<br>") || `<span class="vs">no kills yet</span>`;
     } catch (e) {
       document.getElementById("watch").textContent = "tool not running";
     }

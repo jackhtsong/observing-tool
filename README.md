@@ -28,11 +28,14 @@ Goal: run the whole tool live, frame by frame, and show the observer one calm su
 - ✓ Observer page (`ui/`): a local web page with the pair to watch, an "also watch" pair, the minimap with the pair drawn on, and status (live, spike, alive counts, latency). Works as an OBS browser source. Standard library only.
 - ✓ A "live" input made from a VOD played in real time (`capture/realtime_video.py`), so everything can be tested without a game.
 - ✓ Latency: the pipeline takes ~22 ms per frame (target: under 100 ms).
+- ✓ Kill-likelihood gate: the live page only shows a pair when its chance of being in a kill within 3 s is over 15% (`--threshold`; about 3 times the average pair's chance). Otherwise it shows no suggestion. The chance comes from a logistic regression on the pair features (`predict/probability.py`), trained with `scripts.train_fight_model` and saved in `predict/models/`. Checked on held-out videos, a single pair's honest chance rarely goes above ~12%, so a 50% bar would almost never show anything.
 - ○ Real screen capture (needs a capture library, e.g. `mss`; not installed yet).
 - ○ Fixed observer settings documented; tested in a custom game end to end.
 
 ```bash
 .venv/bin/python -m scripts.run_live                        # then open http://localhost:8765/
+.venv/bin/python -m scripts.run_live --threshold 0.25       # only show likelier fights
+.venv/bin/python -m scripts.train_fight_model               # retrain the kill-likelihood model after adding VODs
 .venv/bin/python -m scripts.run_live --video data/vods/ascent_test.mp4 --start 120 --predictor "closest pair"
 ```
 
@@ -52,7 +55,7 @@ Goal: prove that minimap positions can predict fights, on recorded matches.
 The minimap clearly beats random. "Held angles" (`predict/angles.py`: pair whoever holds an angle with the enemy closest to walking into it) is the best or tied-best predictor at every lead time and the clearest gain at 5 s, but at 2 s it is not *clearly* better than closest pair (the original exit test). Also tried and not better: walking distance + closing speed (`predict/heuristic.py`), facing alone, and a pull towards the planted spike (`predict/context.py`). Phase 0 was closed with held angles as the predictor.
 
 What was built:
-- Player dots on the minimap with team and facing (`perception/minimap_dots.py`): 80% of hand-labelled players found, 83% precision.
+- Player dots on the minimap with team and facing (`perception/minimap_dots.py`). A circle finder proposes candidates and a small learned classifier (`perception/icon_classifier.py`, trained on your clicks with `scripts.train_icon_classifier`) decides which are players. On videos it wasn't trained on: 73% of labelled players found, 86% precision (rules alone: 72% / 82%).
 - Kill feed reader (`perception/kill_feed.py`), spike state (`perception/round_state.py`).
 - Tracker with smoothed position, speed and facing (`tracking/player_tracker.py`).
 - Map model per map with walking distances and sightlines (`maps/`), editable by hand.
@@ -70,6 +73,7 @@ What was built:
 .venv/bin/python -m scripts.detect_kills                      # every kill in a clip
 .venv/bin/python -m scripts.label_dots                        # click tool: mark every player on 50 frames
 .venv/bin/python -m scripts.score_dots                        # grade the dot detector against those marks
+.venv/bin/python -m scripts.train_icon_classifier             # re-train the 'is this a player?' model after labelling more
 .venv/bin/python -m pytest                                     # run the tests
 ```
 

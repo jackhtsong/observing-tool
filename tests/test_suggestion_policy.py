@@ -50,3 +50,20 @@ def test_switches_at_once_when_the_pair_disappears():
     policy.update(0.0, ranked(pair("red-1", "teal-1", 0.9), pair("red-2", "teal-2", 0.5)))
     s = policy.update(0.1, ranked(pair("red-2", "teal-2", 0.5)))   # teal-1 died
     assert s.pair.red.id == "red-2" and s.changed
+
+
+def test_min_score_hides_unlikely_pairs_and_keeps_a_band():
+    """With a 50% bar: nothing at 40%; shown at 55%; kept at 47%; dropped at 40%."""
+    from policy.suggestion import PolicySettings
+    policy = SuggestionPolicy(PolicySettings(min_score=0.5, keep_band=0.05))
+    assert policy.update(0.0, ranked(pair("red-1", "teal-1", 0.40))).pair is None
+    assert policy.update(0.1, ranked(pair("red-1", "teal-1", 0.55))).pair.red.id == "red-1"
+    assert policy.update(0.2, ranked(pair("red-1", "teal-1", 0.47))).pair.red.id == "red-1"
+    assert policy.update(0.3, ranked(pair("red-1", "teal-1", 0.40))).pair is None
+
+
+def test_min_score_also_applies_to_the_also_watch_pair():
+    from policy.suggestion import PolicySettings
+    policy = SuggestionPolicy(PolicySettings(min_score=0.5))
+    s = policy.update(0.0, ranked(pair("red-1", "teal-1", 0.7), pair("red-2", "teal-2", 0.3)))
+    assert s.pair.red.id == "red-1" and s.also is None

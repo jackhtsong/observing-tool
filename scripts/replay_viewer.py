@@ -5,7 +5,7 @@ This is the phase 0 demo, and the quickest way to see *why* a prediction
 missed. For every moment of the video it shows:
 
   left    the minimap, enlarged, with
-            - every tracked player (red / teal circles with their track number,
+            - every tracked player (red / teal circles with their number 1-5,
               and a short white line for the way they are looking)
             - the predictor's #1 pair (thick yellow line) and #2 pair (thin line)
             - each kill as a big X on the victim's last spot, for 2 s
@@ -153,7 +153,7 @@ class ReplayRenderer:
                 # Short white line: which way the player is looking.
                 tip = (int(centre[0] + t.facing_x * 22), int(centre[1] + t.facing_y * 22))
                 cv2.line(out, centre, tip, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(out, t.id.split("-")[-1], (centre[0] + 11, centre[1] - 8),
+            cv2.putText(out, str(t.slot), (centre[0] + 11, centre[1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1, cv2.LINE_AA)
 
         for d in self.recent_deaths(time):
@@ -197,7 +197,9 @@ class ReplayRenderer:
             wait = upcoming.time - time
             in_top2 = any(p.involves(upcoming.track_id) for p in ranked[:2])
             victim_team = TEAM_NAMES.get(upcoming.team, upcoming.team)
-            write(f"next kill in {wait:4.1f}s: {victim_team} {upcoming.track_id} dies",
+            victim = next((t for t in (tracks or []) if t.id == upcoming.track_id), None)
+            who = f"{victim_team} {victim.slot}" if victim else victim_team
+            write(f"next kill in {wait:4.1f}s: {who} dies",
                   TEXT, 0.55, 1)
             if tracks is None:
                 write("  (not live now)", DIM, 0.5)
@@ -218,7 +220,8 @@ class ReplayRenderer:
             extra = ""
             if self.predictor_name == "heuristic":
                 extra = f"  walk {pair.walking_distance:3.0f}px  closing {pair.closing_speed:+4.0f}"
-            write(f"{rank}. {pair.red.id} vs {pair.teal.id}   {pair.score:+.2f}{extra}", colour, 0.45, 1, 22)
+            write(f"{rank}. {TEAM_NAMES[RED]} {pair.red.slot} vs {TEAM_NAMES['teal']} {pair.teal.slot}"
+                  f"   {pair.score:+.2f}{extra}", colour, 0.45, 1, 22)
         if not ranked:
             write("(no pairs)", DIM, 0.5)
 

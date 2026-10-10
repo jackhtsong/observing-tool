@@ -13,6 +13,12 @@ flickers. So, as the design doc says, the suggestion only changes when:
 
 Besides the main suggestion it also gives an "also watch" pair: the best
 other pair, for the busy moments when two things happen at once.
+
+Optionally, a minimum score (`min_score`): with a probability predictor
+(predict/probability.py) this means "only suggest a pair whose chance of a
+kill is over, say, 50%". Below it there is no suggestion at all. To avoid
+flicker right at the line, a pair needs `min_score` to be suggested but may
+stay suggested down to `min_score - keep_band`.
 """
 
 from __future__ import annotations
@@ -36,6 +42,8 @@ class Suggestion:
 class PolicySettings:
     margin: float = 0.1     # how much higher a challenger must score to take over
     hold_for: float = 0.3   # seconds the challenger must stay ahead (design doc: 300 ms)
+    min_score: float | None = None   # no suggestion unless a pair scores at least this
+    keep_band: float = 0.05          # a suggested pair may dip this far below min_score and stay
 
 
 def pair_key(pair: PairScore) -> tuple[str, str]:
@@ -60,6 +68,12 @@ class SuggestionPolicy:
     def update(self, time: float, ranked: list[PairScore]) -> Suggestion:
         """Take this frame's ranking (best first) and return the suggestion to show."""
         s = self.settings
+        if s.min_score is not None:
+            # Pairs good enough to be suggested: over the bar, or the current
+            # pair still within the keep band below it.
+            ranked = [p for p in ranked
+                      if p.score >= s.min_score
+                      or (pair_key(p) == self._current and p.score >= s.min_score - s.keep_band)]
         if not ranked:
             self.reset()
             return Suggestion(pair=None, also=None, since=None)

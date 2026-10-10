@@ -46,12 +46,15 @@ def load_tracks(path: str) -> TrackLog:
     if "fx" not in table:
         table["fx"] = 0.0
         table["fy"] = 0.0
+    # ...and files made before player numbers (slots) have no slot column.
+    if "slot" not in table:
+        table["slot"] = 0
     frames: dict[float, list[Track]] = {}
     for time, rows in table.groupby("time"):
         frames[float(time)] = [
             Track(id=r.track, team=r.team, x=r.x, y=r.y, vx=r.vx, vy=r.vy,
                   last_seen=float(time) if r.seen else float("nan"), confirmed=True,
-                  facing_x=r.fx, facing_y=r.fy)
+                  facing_x=r.fx, facing_y=r.fy, slot=int(r.slot))
             for r in rows.itertuples()
         ]
     return TrackLog(times=sorted(frames), frames=frames)

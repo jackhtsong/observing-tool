@@ -1,6 +1,7 @@
-# Phase 0 dependencies. Install with:  .venv/bin/pip install -r requirements.txt
+# Dependencies. Install with:  .venv/bin/pip install -r requirements.txt
 opencv-python>=4.9     # video decoding, image processing, circle finder
 numpy>=1.26            # image arrays and maths
 pandas>=2.2            # tables of detections and kill events (later phase 0 steps)
 matplotlib>=3.8        # plots for the evaluation step
 pytest>=8.0            # runs the tests in tests/
+mss>=9.0               # live screen capture (phase 1)
