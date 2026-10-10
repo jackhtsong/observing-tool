@@ -32,18 +32,27 @@ Goal: prove that minimap positions can predict fights before building anything l
 
 ### Running what exists so far
 
-Built so far: finding both teams' player dots on the minimap, and reading kills from the kill feed.
+Built so far: finding both teams' player dots on the minimap, reading kills from the kill feed, tracking each player over time, and a first fight predictor with its evaluation.
 
 ```bash
 .venv/bin/python -m scripts.detect_dots --times 125 175 250   # check a few moments, saves pictures
 .venv/bin/python -m scripts.detect_dots --step 1              # whole clip, one frame per second
 .venv/bin/python -m scripts.detect_kills                      # every kill in the clip
+.venv/bin/python -m scripts.track_players --save-video        # player tracks, plus a minimap video to check them
+.venv/bin/python -m scripts.process_vods                      # track every video in data/vods/ not tracked yet
+.venv/bin/python -m scripts.evaluate_predictor                # heuristic vs closest pair, pooled over all tracked videos
+.venv/bin/python -m scripts.label_dots                        # click tool: mark every player on 50 frames
+.venv/bin/python -m scripts.score_dots                        # grade the dot detector against those marks
 .venv/bin/python -m pytest                                     # run the tests
 ```
 
 Results land in `data/out/`:
 - `dots/dots.csv` has one row per detected player icon, and `dots/dots_<seconds>.png` shows red circles for PRX and cyan circles for LEV.
 - `kills/kills.csv` has one row per kill (time, which team killed which), and `kills/kill_<seconds>.png` is that kill-feed row, so you can read the names.
+- `tracks/<video name>/tracks.csv` has each player's smoothed position and speed, 10 times a second. `deaths.csv` beside it says where each victim died, and `tracks.mp4` shows the tracks drawn on the minimap.
+- `eval/recall.png` and `eval/per_kill.csv` show how often each predictor had the victim in its top 2 pairs, 1 to 5 seconds before each kill.
+
+**More VODs:** drop more 1080p Ascent videos with the same broadcast overlay into `data/vods/`, run `process_vods`, then `evaluate_predictor`.
 
 **Done when** the heuristic predicts the players in upcoming kills (top-2 suggestions, 2 seconds ahead) clearly better than a naive "closest pair" baseline.
 
