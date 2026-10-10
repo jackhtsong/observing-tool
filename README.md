@@ -40,7 +40,9 @@ Built so far: finding both teams' player dots on the minimap, reading kills from
 .venv/bin/python -m scripts.detect_kills                      # every kill in the clip
 .venv/bin/python -m scripts.track_players --save-video        # player tracks, plus a minimap video to check them
 .venv/bin/python -m scripts.process_vods                      # track every video in data/vods/ not tracked yet
+.venv/bin/python -m scripts.build_map_model                   # map model pictures in maps/ascent/ + a preview
 .venv/bin/python -m scripts.evaluate_predictor                # heuristic vs closest pair, pooled over all tracked videos
+.venv/bin/python -m scripts.replay_viewer                     # watch predictions next to real kills (needs track_players first)
 .venv/bin/python -m scripts.label_dots                        # click tool: mark every player on 50 frames
 .venv/bin/python -m scripts.score_dots                        # grade the dot detector against those marks
 .venv/bin/python -m pytest                                     # run the tests
@@ -50,7 +52,10 @@ Results land in `data/out/`:
 - `dots/dots.csv` has one row per detected player icon, and `dots/dots_<seconds>.png` shows red circles for PRX and cyan circles for LEV.
 - `kills/kills.csv` has one row per kill (time, which team killed which), and `kills/kill_<seconds>.png` is that kill-feed row, so you can read the names.
 - `tracks/<video name>/tracks.csv` has each player's smoothed position and speed, 10 times a second. `deaths.csv` beside it says where each victim died, and `tracks.mp4` shows the tracks drawn on the minimap.
+- `replay/<video>_<start>-<end>.mp4` is written by `replay_viewer --save`.
 - `eval/recall.png` and `eval/per_kill.csv` show how often each predictor had the victim in its top 2 pairs, 1 to 5 seconds before each kill.
+
+**Map model:** `maps/ascent/walkable.png` (where players can walk) and `maps/ascent/walls.png` (what blocks sight) are a first guess made from the minimap. Fix mistakes by painting them in black or white in any image editor; the distance and sight tables rebuild automatically. `data/out/map_model/preview.png` shows the result.
 
 **More VODs:** drop more 1080p Ascent videos with the same broadcast overlay into `data/vods/`, run `process_vods`, then `evaluate_predictor`.
 

@@ -55,6 +55,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start", type=float, default=0.0, help="first second to process")
     p.add_argument("--end", type=float, default=None, help="last second to process (default: end of video)")
     p.add_argument("--step", type=float, default=0.1, help="seconds between frames (0.1 = 10 per second)")
+    p.add_argument("--assist", action="store_true",
+                   help="let the tracker help the detector look for expected players (experimental)")
     p.add_argument("--save-video", "--video-out", dest="save_video", action="store_true",
                    help="also save tracks.mp4 with the tracks drawn on the minimap")
     return p.parse_args()
@@ -87,11 +89,17 @@ def draw_tracks(minimap: np.ndarray, tracks: list[Track], trails: dict[str, list
 
 
 def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float | None = None,
-                step: float = 0.1, save_video: bool = False) -> None:
+                step: float = 0.1, save_video: bool = False, assist: bool = False) -> None:
     """Run detection, kill reading and tracking over one video and save the results.
 
     Also saves the video's empty-map background as background.png, so later
     steps (like the evaluation) have the map of this video without opening it.
+
+    assist: let the tracker tell the detector where to look harder for
+    players it expects but didn't find (DotDetector.find_expected). Off by
+    default: on the labelled frames it found 5% more players but added more
+    false ones, kept dead players' tracks alive on their death markers, and
+    made the predictor evaluation slightly worse.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,7 +137,10 @@ def track_video(video_path: str, out_dir: Path, start: float = 0.0, end: float |
                     continue
                 not_live_since = None
 
-                tracks = tracker.update(t, detector.detect(minimap))
+                dots = detector.detect(minimap)
+                if assist:
+                    dots += detector.find_expected(minimap, tracker.expected_missing(t, dots), dots)
+                tracks = tracker.update(t, dots)
                 for tr in tracks:
                     seen = int(t - tr.last_seen < 1e-6)
                     rows.writerow([f"{t:.2f}", tr.id, tr.team, f"{tr.x:.1f}", f"{tr.y:.1f}",
@@ -164,7 +175,7 @@ def main() -> None:
     args = parse_args()
     # Each video gets its own folder, named after the video file.
     out_dir = Path(args.out) / Path(args.video).stem
-    track_video(args.video, out_dir, args.start, args.end, args.step, args.save_video)
+    track_video(args.video, out_dir, args.start, args.end, args.step, args.save_video, assist=args.assist)
 
 
 if __name__ == "__main__":

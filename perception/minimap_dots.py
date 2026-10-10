@@ -97,7 +97,12 @@ class DotDetectorSettings:
     min_saturation: int = 60      # ring pixels must be clearly coloured...
     min_value: int = 100          # ...and not too dark
     min_ring_share: float = 0.08  # at least 8% of ring pixels must be the team colour
-    max_inside_share: float = 0.35  # more team colour than this INSIDE means it is background, not a ring
+    max_inside_share: float = 0.5   # more team colour than this INSIDE means it is background, not a ring
+                                    # (not lower: red agents' skin and hair are reddish too)
+
+    # The spike icon (yellow) next to its carrier often gets a circle of its
+    # own. Circles that are this yellow inside are dropped.
+    max_yellow_inside: float = 0.3
 
     # Step 4: how much more the inside of the circle has changed (versus the
     # empty map) than the floor just around it. Comparing with the
@@ -111,12 +116,29 @@ class DotDetectorSettings:
     # _remove_duplicates).
     merge_distance: float = 1.3
 
+    # find_expected(): how far around the tracker's predicted spot to search,
+    # and the lower bars a dot must pass there.
+    search_radius: int = 4
+    expected_ring_share: float = 0.04
+    expected_change: float = 8.0
+    expected_keep_away: float = 9.0   # px from any dot already found
+
     # A team has 5 players, so never report more than 5 dots of one colour.
     max_per_team: int = 5
 
     # Circles with no team ring are mostly not players (smokes, faded ability
     # icons, floor marks), so they are thrown away unless this is switched on.
     keep_unknown: bool = False
+
+
+@dataclass
+class _ColourMaps:
+    """Per-pixel facts about one frame, worked out once and shared by all candidates."""
+
+    red: np.ndarray      # True where the pixel is team red
+    teal: np.ndarray     # True where the pixel is team teal
+    yellow: np.ndarray   # True where the pixel is spike yellow
+    change: np.ndarray   # how different each pixel is from the empty map (0..255)
 
 
 class DotDetector:
@@ -175,55 +197,113 @@ class DotDetector:
         """
         hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
         red_pixels, teal_pixels = self._team_colour_masks(hsv)
+        yellow_pixels = (hsv[..., 0] >= 20) & (hsv[..., 0] <= 35) & (hsv[..., 1] >= 120) & (hsv[..., 2] >= 150)
         change_map = np.abs(minimap.astype(np.int16) - self.background).mean(axis=2)
 
-        dots = []
-        for x, y, r in self._find_circles(minimap):
-            # Step 2: centre must be on (or right next to) the floor.
-            if not self._inside(x, y) or not self.allowed_area[int(y), int(x)]:
-                continue
+        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map)
 
-            # Step 3: share of red and teal pixels in a ring around the circle.
-            # The ring goes from just inside the edge to a few pixels outside,
-            # which also covers the little "facing" pointer.
-            ring = self._disc_mask(minimap.shape, x, y, r + 3) & ~self._disc_mask(minimap.shape, x, y, r - 2)
-            red_share = float(red_pixels[ring].mean())
-            teal_share = float(teal_pixels[ring].mean())
-            team = self._pick_team(red_share, teal_share)
-
-            # A real icon has a portrait inside the ring, so its inside is not
-            # mostly team colour. When the inside IS mostly team colour, the
-            # "ring" is really a red or teal game scene showing through a gap
-            # in the see-through minimap, so we ignore the colour.
-            inside = self._disc_mask(minimap.shape, x, y, r - 1)
-            if team == RED and red_pixels[inside].mean() > self.settings.max_inside_share:
-                team = UNKNOWN
-            elif team == TEAL and teal_pixels[inside].mean() > self.settings.max_inside_share:
-                team = UNKNOWN
-
-            # Step 4: change inside the circle minus the typical change of the
-            # floor just around it (see the settings for why we subtract).
-            around = (self._disc_mask(minimap.shape, x, y, r + 8)
-                      & ~self._disc_mask(minimap.shape, x, y, r + 3)
-                      & self.floor)
-            local_tint = float(np.median(change_map[around])) if around.any() else 0.0
-            change = float(change_map[inside].mean()) - local_tint
-
-            # A coloured ring is strong evidence on its own, so team dots only
-            # need a little change. Circles without a team ring need a lot of
-            # change, and are dropped entirely unless keep_unknown is on.
-            if team == UNKNOWN:
-                if not self.settings.keep_unknown or change < self.settings.min_change_unknown:
-                    continue
-            elif change < self.settings.min_change_team:
-                continue
-
-            dots.append(Dot(
-                x=x, y=y, radius=r, team=team,
-                red_share=red_share, teal_share=teal_share, change=change,
-            ))
+        # Step 1: find circles; steps 2-4: check each one (see _check).
+        dots = [d for d in (self._check(x, y, r, maps) for x, y, r in self._find_circles(minimap)) if d]
+        # Step 5: clean up.
         dots = self._remove_duplicates(dots)
+
         return self._limit_per_team(dots)
+
+    def find_expected(self, minimap: np.ndarray, expected: list[tuple[float, float, str]],
+                      existing: list[Dot]) -> list[Dot]:
+        """Look harder for players the tracker expects but detect() didn't find.
+
+        expected: (x, y, team) of where the tracker predicts each missing
+        player to be. Around each spot we try every centre within
+        `search_radius` px, keep the one whose ring has the most of that
+        team's colour, and accept it with lower bars than detect() uses: a
+        faint ring right where a player should be is very likely that player.
+
+        existing: the dots detect() already found. A find that lands on one
+        of them (another player's icon next to the expected spot) is not a
+        new player and is dropped, and each team stays at 5 dots at most.
+        """
+        s = self.settings
+        if not expected:
+            return []
+        hsv = cv2.cvtColor(minimap, cv2.COLOR_BGR2HSV)
+        red_pixels, teal_pixels = self._team_colour_masks(hsv)
+        yellow_pixels = (hsv[..., 0] >= 20) & (hsv[..., 0] <= 35) & (hsv[..., 1] >= 120) & (hsv[..., 2] >= 150)
+        change_map = np.abs(minimap.astype(np.int16) - self.background).mean(axis=2)
+        maps = _ColourMaps(red=red_pixels, teal=teal_pixels, yellow=yellow_pixels, change=change_map)
+
+        found = []
+        r = (s.min_radius + s.max_radius) / 2
+        offsets = range(-s.search_radius, s.search_radius + 1)
+        for ex, ey, team in expected:
+            tries = [self._check(ex + dx, ey + dy, r, maps, s.expected_ring_share, s.expected_change)
+                     for dx in offsets for dy in offsets]
+            tries = [d for d in tries if d is not None and d.team == team
+                     and not any(np.hypot(d.x - e.x, d.y - e.y) < s.expected_keep_away for e in existing + found)]
+            if tries:
+                found.append(max(tries, key=lambda d: d.red_share if team == RED else d.teal_share))
+
+        # Respect the 5-per-team limit, counting the dots already found.
+        kept = []
+        for d in found:
+            if sum(e.team == d.team for e in existing + kept) < s.max_per_team:
+                kept.append(d)
+        return kept
+
+    def _check(self, x: float, y: float, r: float, maps: _ColourMaps,
+               min_ring_share: float | None = None, min_change: float | None = None) -> Dot | None:
+        """Steps 2-4 for one candidate circle: return a Dot, or None if it fails.
+
+        min_ring_share and min_change override the settings' usual bars
+        (find_expected uses lower ones).
+        """
+        min_ring_share = self.settings.min_ring_share if min_ring_share is None else min_ring_share
+        min_change = self.settings.min_change_team if min_change is None else min_change
+        shape = maps.change.shape
+        # Step 2: centre must be on (or right next to) the floor.
+        if not self._inside(x, y) or not self.allowed_area[int(y), int(x)]:
+            return None
+
+        # Step 3: share of red and teal pixels in a ring around the circle.
+        # The ring goes from just inside the edge to a few pixels outside,
+        # which also covers the little "facing" pointer.
+        ring = self._disc_mask(shape, x, y, r + 3) & ~self._disc_mask(shape, x, y, r - 2)
+        red_share = float(maps.red[ring].mean())
+        teal_share = float(maps.teal[ring].mean())
+        team = self._pick_team(red_share, teal_share, min_ring_share)
+
+        # A real icon has a portrait inside the ring, so its inside is not
+        # mostly team colour. When the inside IS mostly team colour, the
+        # "ring" is really a red or teal game scene showing through a gap
+        # in the see-through minimap, so we ignore the colour.
+        inside = self._disc_mask(shape, x, y, r - 1)
+        if team == RED and maps.red[inside].mean() > self.settings.max_inside_share:
+            team = UNKNOWN
+        elif team == TEAL and maps.teal[inside].mean() > self.settings.max_inside_share:
+            team = UNKNOWN
+
+        # The spike icon is not a player.
+        if maps.yellow[inside].mean() > self.settings.max_yellow_inside:
+            return None
+
+        # Step 4: change inside the circle minus the typical change of the
+        # floor just around it (see the settings for why we subtract).
+        around = (self._disc_mask(shape, x, y, r + 8)
+                  & ~self._disc_mask(shape, x, y, r + 3)
+                  & self.floor)
+        local_tint = float(np.median(maps.change[around])) if around.any() else 0.0
+        change = float(maps.change[inside].mean()) - local_tint
+
+        # A coloured ring is strong evidence on its own, so team dots only
+        # need a little change. Circles without a team ring need a lot of
+        # change, and are dropped entirely unless keep_unknown is on.
+        if team == UNKNOWN:
+            if not self.settings.keep_unknown or change < self.settings.min_change_unknown:
+                return None
+        elif change < min_change:
+            return None
+
+        return Dot(x=x, y=y, radius=r, team=team, red_share=red_share, teal_share=teal_share, change=change)
 
     # ----- helpers used by detect() -----
 
@@ -302,10 +382,10 @@ class DotDetector:
         teal = coloured & (hue >= s.teal_hue_low) & (hue <= s.teal_hue_high)
         return red, teal
 
-    def _pick_team(self, red_share: float, teal_share: float) -> str:
-        """Choose the team whose colour fills more of the ring, if either is enough."""
+    def _pick_team(self, red_share: float, teal_share: float, min_share: float) -> str:
+        """Choose the team whose colour fills more of the ring, if either reaches min_share."""
         best = max(red_share, teal_share)
-        if best < self.settings.min_ring_share:
+        if best < min_share:
             return UNKNOWN
         return RED if red_share >= teal_share else TEAL
 

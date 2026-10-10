@@ -110,6 +110,10 @@ class TrackerSettings:
 
     players_per_team: int = 5
 
+    # expected_missing() only asks the detector to look harder for players
+    # unseen for at most this long.
+    assist_max_unseen: float = 1.0
+
     # Deaths: after a kill, a track of the victim's team that has been
     # unseen for at least `death_unseen` seconds, and went unseen no more
     # than `death_window` seconds before or after the kill, is the victim.
@@ -165,6 +169,25 @@ class PlayerTracker:
     def report_death(self, time: float, team: str) -> None:
         """Tell the tracker the kill feed showed a player of `team` dying."""
         self._pending_deaths.append(_PendingDeath(time=time, team=team))
+
+    def expected_missing(self, time: float, dots: list[Dot], near: float = 8.0) -> list[tuple[float, float, str]]:
+        """Where confirmed players should be at `time` but no dot is nearby.
+
+        Returns (x, y, team) predictions, moved forward along each track's
+        speed. The script passes these to the detector's find_expected() to
+        look harder in exactly those spots, before calling update().
+        """
+        dt = 0.0 if self._time is None else time - self._time
+        missing = []
+        for t in self.confirmed_tracks():
+            # Only players hidden briefly. One unseen for longer has most
+            # likely died, and searching near them finds their death marker.
+            if time - t.last_seen > self.settings.assist_max_unseen:
+                continue
+            x, y = t.x + t.vx * dt, t.y + t.vy * dt
+            if not any(d.team == t.team and np.hypot(d.x - x, d.y - y) < near for d in dots):
+                missing.append((x, y, t.team))
+        return missing
 
     def confirmed_tracks(self) -> list[Track]:
         """Tracks we believe are real players, alive right now."""

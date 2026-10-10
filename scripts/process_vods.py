@@ -37,6 +37,8 @@ def main() -> None:
     """Find the videos, check their size, and track the ones not done yet."""
     p = argparse.ArgumentParser(description="Track every VOD in data/vods/.")
     p.add_argument("--redo", action="store_true", help="track videos again even if already done")
+    p.add_argument("--assist", action="store_true", help="let the tracker help the detector (experimental)")
+    p.add_argument("--out", default=str(OUT_DIR), help="where to put each video's results folder")
     args = p.parse_args()
 
     videos = sorted(f for f in VOD_DIR.iterdir() if f.suffix.lower() in VIDEO_TYPES)
@@ -45,7 +47,7 @@ def main() -> None:
         return
 
     for path in videos:
-        out_dir = OUT_DIR / path.stem
+        out_dir = Path(args.out) / path.stem
         if (out_dir / "deaths.csv").exists() and not args.redo:
             print(f"{path.name}: already tracked, skipping")
             continue
@@ -59,7 +61,7 @@ def main() -> None:
             continue
 
         print(f"{path.name}: tracking...")
-        track_video(str(path), out_dir)
+        track_video(str(path), out_dir, assist=args.assist)
 
 
 if __name__ == "__main__":

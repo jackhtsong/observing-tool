@@ -19,7 +19,7 @@ of one red and one teal player we measure three things:
                      again. Positive = getting closer. Scaled to -1..1.
 
   line of sight      whether a straight line between them stays on the
-                     floor (see maps/map_geometry.py). 1 or 0.
+                     walls (see maps/map_model.py). 1 or 0.
 
   score = w_near * nearness + w_closing * closing + w_sight * line_of_sight
 
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from maps.map_geometry import MapGeometry
+from maps.map_model import MapModel
 from perception.teams import RED, TEAL
 from tracking.player_tracker import Track
 
@@ -74,7 +74,7 @@ class HeuristicSettings:
 class HeuristicPredictor:
     """Ranks red/teal pairs using walking distance, closing speed and line of sight."""
 
-    def __init__(self, geometry: MapGeometry, settings: HeuristicSettings | None = None):
+    def __init__(self, geometry: MapModel, settings: HeuristicSettings | None = None):
         self.geometry = geometry
         self.settings = settings or HeuristicSettings()
 

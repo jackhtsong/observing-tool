@@ -38,6 +38,7 @@ Outputs go to data/out/eval/:
 
 from __future__ import annotations
 
+import argparse
 import csv
 from math import comb
 from pathlib import Path
@@ -48,7 +49,7 @@ import matplotlib
 matplotlib.use("Agg")  # draw charts to files, no window needed
 import matplotlib.pyplot as plt
 
-from maps.map_geometry import MapGeometry
+from maps.map_model import MapModel
 from perception.map_background import floor_mask
 from predict.heuristic import ClosestPairBaseline, HeuristicPredictor, PairScore
 from record.track_log import TrackLog, load_deaths, load_tracks
@@ -57,10 +58,11 @@ from tracking.player_tracker import Death, Track
 LEADS = [1.0, 2.0, 3.0, 5.0]     # seconds before the kill
 TOP_K = [1, 2]
 TRACKS_DIR = Path("data/out/tracks")   # one subfolder per tracked video
+MAP_FOLDER = Path("maps/ascent")       # the hand-editable map model (scripts/build_map_model.py)
 OUT_DIR = Path("data/out/eval")
 
 
-def guess_killer(log: TrackLog, death: Death, geometry: MapGeometry) -> str | None:
+def guess_killer(log: TrackLog, death: Death, geometry: MapModel) -> str | None:
     """Best guess at the killer's track id: the enemy walking-closest to the victim.
 
     We use the last frame (up to 2 s before the kill) where the victim is
@@ -111,7 +113,7 @@ def evaluate_video(folder: Path, hits: dict, evaluable: dict, rows: list) -> int
     """
     log = load_tracks(str(folder / "tracks.csv"))
     deaths = load_deaths(str(folder / "deaths.csv"))
-    geometry = MapGeometry(floor_mask(cv2.imread(str(folder / "background.png"))))
+    geometry = MapModel.load(MAP_FOLDER)
     methods = {"heuristic": HeuristicPredictor(geometry), "closest pair": ClosestPairBaseline()}
 
     killers = {d.time: guess_killer(log, d, geometry) for d in deaths}
@@ -145,12 +147,15 @@ def evaluate_video(folder: Path, hits: dict, evaluable: dict, rows: list) -> int
 
 def main() -> None:
     """Score both predictors on every tracked video, print a table, save a chart."""
+    p = argparse.ArgumentParser(description="Score the predictor against the closest-pair baseline.")
+    p.add_argument("--tracks", default=str(TRACKS_DIR), help="folder holding one results folder per video")
+    args = p.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Every folder written by track_players.py / process_vods.py.
-    folders = sorted(f for f in TRACKS_DIR.iterdir() if (f / "deaths.csv").exists())
+    folders = sorted(f for f in Path(args.tracks).iterdir() if (f / "deaths.csv").exists())
     if not folders:
-        print(f"No tracked videos in {TRACKS_DIR}/. Run scripts.process_vods first.")
+        print(f"No tracked videos in {args.tracks}/. Run scripts.process_vods first.")
         return
 
     # hits[(method, measure, lead, k)] = number of kills hit, pooled over all videos
